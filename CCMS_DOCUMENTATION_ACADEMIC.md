@@ -277,6 +277,8 @@ graph LR
     end note
 ```
 
+**Diagram Description:** Context Diagram (Level-0 DFD) represents CCMS as a black-box abstraction with external entities: users and email service. Users provide case filing and authentication requests; system returns status reports and search results. All notifications routed through SMTP email service.
+
 ## 2.3 Level-1 DFD: Process Decomposition
 
 Decomposes system into major functional areas with data store interactions.
@@ -344,6 +346,8 @@ graph TD
     P1.5 -->|Auth Token| Output["Client"]
 ```
 
+**Diagram Description:** Level-2 DFD details authentication workflow in P1 (User Management). Users submit credentials to Credential Validation, which interfaces with Firebase Auth and User data store. Successful validation issues JWT token and records session in Firestore.
+
 ## 2.5 Structured Analysis: Module Decomposition Chart
 
 Hierarchical module structure for architectural planning.
@@ -401,6 +405,8 @@ graph TB
     AUDIT --> AU3["Report Generation"]
     AUDIT --> AU4["Compliance Export"]
 ```
+
+**Diagram Description:** Module Decomposition Chart breaks CCMS into eight subsystems: Authentication & Identity, User Management, Case Management, Document Service, Scheduling & Calendar, Search & Analytics, Notification Engine, and Audit & Compliance. Hierarchical structure enables team assignment and incremental development.
 
 ---
 
@@ -480,6 +486,8 @@ graph LR
     UC9 -.->|triggers| Notification["Send Notification"]
     UC8 -.->|affects| UC2
 ```
+
+**Diagram Description:** Use Case Diagram shows 13 primary use cases across four actor types (Public Users, Lawyers, Judges, Administrators). Key relationships: **includes** (UC3→UC4), **triggers** (UC9→Notification), **affects** (UC8→UC2). Defines RBAC requirements and user journey workflows for UI/UX design.
 
 ## 3.4 Detailed Use Case Specifications (IEEE 830 Format)
 
@@ -671,6 +679,8 @@ classDiagram
     Hearing "1" -- "*" Notification : triggers
 ```
 
+**Diagram Description:** Class Diagram shows domain entities and associations. **Case** is the aggregate root with compositions to Party, Document, and Hearing. **User** relates to LawyerDetails, notifications, and audit logs. All associations include cardinality constraints (1:*, 0..1:1) enforcing integrity rules.
+
 ## 4.4 Generalization Hierarchies (Inheritance)
 
 ```mermaid
@@ -712,6 +722,8 @@ classDiagram
     UserRole <|-- LawyerRole
     UserRole <|-- PublicUserRole
 ```
+
+**Diagram Description:** Generalization Hierarchy defines polymorphic role-based access control. Abstract **UserRole** superclass with `hasPermission()` and `getAccessibleResources()` operations, specialized in four concrete role subclasses: AdminRole, JudgeRole, LawyerRole, and PublicUserRole. Enables runtime polymorphism without explicit type checking.
 
 ---
 
@@ -775,41 +787,47 @@ stateDiagram-v2
 
 ## 5.3 User Account State Machine
 
-Lifecycle of user accounts from registration through deactivation:
+Lifecycle of user accounts from registration through deactivation (Firebase Authentication + Firestore):
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PendingRegistration: initiateRegistration()
+    [*] --> Registered: createUserWithEmailAndPassword()
     
-    PendingRegistration --> EmailVerification: submitRegistration() / sendOTP()
-    EmailVerification --> Inactive: verifyEmail(otp) / storeUserRecord()
+    Registered --> PublicActive: registerUser() [Public User]
+    Registered --> LawyerPending: registerLawyer() [Lawyer User]
     
-    Inactive --> PendingApproval: submitLawyerProfile() [for lawyers only]
-    PendingApproval --> AdminApprovalWait: [automatic]
+    PublicActive --> Active: [immediate activation]
     
-    AdminApprovalWait --> Active: approveProfile() / activateAccount()
-    AdminApprovalWait --> Rejected: rejectProfile(reason) / notifyUser()
+    LawyerPending --> PendingAdminReview: storeUserDoc({status: pending})
+    PendingAdminReview --> Active: approveLawyer() / updateDoc({status: active})
+    PendingAdminReview --> Rejected: rejectLawyer() / updateDoc({status: rejected})
     
-    Inactive --> Active: directActivation() [for public users]
+    Active --> Suspended: securityViolation() [5 failed logins]
+    Active --> Deactivated: initiateDeactivation()
     
-    Active --> Suspended: violateSecurityPolicy() / lockAccount()
-    Active --> Deactivated: initiateDeactivation() / scheduleAccountPurge()
-    
-    Suspended --> Active: resetSecurityFlags() / reinstateLock()
+    Suspended --> Active: resetSecurityFlags()
     
     Rejected --> [*]
     Deactivated --> [*]
     
-    note right of PendingApproval
-        Lawyer profile awaits court administrator review
-        Cannot login until approved or rejected
+    note right of LawyerPending
+        Lawyer status stored in Firestore as 'pending'
+        Cannot login: login() checks status != 'active'
+        Admin must explicitly approve in Firestore
     end note
     
-    note right of Suspended
-        Account locked due to security incident
-        (e.g., 5 failed login attempts, policy violation)
+    note right of PublicActive
+        Public users become 'active' immediately
+        No approval workflow required
+    end note
+    
+    note right of Active
+        User can access system features
+        role-based permissions enforced
     end note
 ```
+
+**Diagram Description:** User Account State Machine models account lifecycle. Public users transition Registered→PublicActive→Active (immediate), lawyers follow Registered→LawyerPending→PendingAdminReview→Active. Active accounts can Suspend after 5 failed logins. Terminal states (Rejected, Deactivated) prevent further transitions.
 
 ## 5.4 Activity Diagrams: Process Workflows
 
@@ -863,6 +881,8 @@ flowchart TD
     style End fill:#FFB6C6
     style SystemProcess fill:#87CEEB
 ```
+
+**Activity Diagram Description:** Case Filing Workflow shows sequential logic with decision points: form validation, party validation (minimum 2), and document validation (malware scan). Successful validation triggers docket generation and case creation, followed by async notification dispatch with error handling loops.
 
 ### Lawyer Approval Workflow (Activity Diagram)
 
@@ -928,158 +948,174 @@ flowchart TD
     style CannotLogin fill:#FFB6C6
 ```
 
+**Activity Diagram Description:** Lawyer Approval Workflow shows multi-actor process: lawyer completes profile and Firebase auth, admin reviews and approves (status='active') or rejects. Explicit async gap between registration and approval models real-world approval delays.
+
 ---
 
 # 6. INTERACTION MODELING AND PROTOCOL SEQUENCES
 
 ## 6.1 Formal Interaction Diagrams
 
-Interaction diagrams model temporal ordering of messages between system components. Notation follows UML 2.5 sequence diagram conventions with:
+Interaction diagrams model temporal ordering of messages between system components, using Firebase SDK. Notation follows UML 2.5 sequence diagram conventions with:
 - **Lifelines (vertical dashed lines):** Represent participant existence over time
-- **Messages (labeled arrows):** Synchronous or asynchronous invocations
+- **Messages (labeled arrows):** SDK method calls and database operations
 - **Activation boxes (rectangles):** Indicate participant execution periods
-- **Guard conditions (square brackets):** Conditional message dispatch
+- **Guard conditions (square brackets):** Conditional logic in Firebase security rules or client-side validation
+
+**Architecture Note:** No traditional backend server; all business logic executes on client via Firebase SDK or Cloud Functions (optional)
 
 ## 6.2 Case Filing Sequence Diagram
 
-Temporal message flow for use case UC3 (File Case):
+Temporal message flow for use case UC3 (File Case) using Firebase SDK:
 
 ```mermaid
 sequenceDiagram
-    participant FrontEnd as Web Frontend
-    participant AuthSvc as Auth Service<br/>(Firebase)
-    participant CaseAPI as Case API
-    participant Firestore as Firestore DB
-    participant CloudStore as Cloud Storage
-    participant EmailSvc as Email Service
+    participant User as User<br/>(Browser)
+    participant FrontEnd as Frontend<br/>(React/Vue)
+    participant AuthSDK as Firebase Auth SDK
+    participant CloudStore as Cloud Storage SDK
+    participant Firestore as Firestore SDK
+    participant CloudFunc as Cloud Functions<br/>(Trigger)
     
-    FrontEnd->>AuthSvc: 1. validateToken(jwtToken)
-    AuthSvc-->>FrontEnd: 2. tokenValid: true
+    FrontEnd->>AuthSDK: 1. getAuth().currentUser
+    AuthSDK-->>FrontEnd: 2. {uid, email, role}
     
-    FrontEnd->>CaseAPI: 3. createCase(caseMetadata, files[])
-    Note over CaseAPI: Validate case fields<br/>Enforce constraints
+    FrontEnd->>CloudStore: 3. ref.child(caseId).put(files[])
+    CloudStore-->>FrontEnd: 4. Upload Success + URLs
     
-    CaseAPI->>CloudStore: 4. uploadDocuments(fileArray)
-    CloudStore-->>CaseAPI: 5. docURLs: [url1, url2, ...]
+    FrontEnd->>Firestore: 5. setDoc(cases/{caseId}, {<br/>title, parties, status: 'Filed',<br/>documents: [{url, name}],<br/>filedAt: serverTimestamp(),<br/>filedBy: uid<br/>})
+    Firestore-->>FrontEnd: 6. Write Success ✓
     
-    CaseAPI->>Firestore: 6. setDoc(cases/{caseId}, {<br/>title, parties, status=Filed,<br/>documents: docURLs,<br/>createdAt: timestamp<br/>})
-    Firestore-->>CaseAPI: 7. success: ✓
+    FrontEnd->>Firestore: 7. addDoc(auditLogs, {<br/>userId: uid,<br/>action: 'fileCaseAction',<br/>caseId, timestamp<br/>})
+    Firestore-->>FrontEnd: 8. logId: AUDIT-12345
     
-    CaseAPI->>Firestore: 8. addDocument(auditLogs, {<br/>userId, action=fileCaseAction,<br/>caseId, timestamp<br/>})
-    Firestore-->>CaseAPI: 9. logId: AUDIT-12345
+    Firestore->>CloudFunc: 9. [Trigger] onDocumentCreated<br/>(cases/{caseId})
+    CloudFunc-->>CloudFunc: 10. Generate confirmation email
+    CloudFunc->>EmailProvider: 11. Send via SMTP<br/>(SendGrid)
     
-    CaseAPI->>EmailSvc: 10. sendEmail({<br/>to: filerEmail,<br/>subject: "Case Filed",<br/>template: caseConfirmation,<br/>data: {caseId, docketNo}<br/>})
-    EmailSvc-->>CaseAPI: 11. deliveryId: MSG-6789
+    FrontEnd-->>User: 12. Display success<br/>Case ID: CASE-20260220-001
+    EmailProvider-->>User: 13. Confirmation email<br/>delivered
     
-    CaseAPI-->>FrontEnd: 12. caseId: CASE-20260220-001<br/>status: success
-    FrontEnd-->>User: 13. Display success message<br/>+ Case ID
-    
-    Note over FrontEnd,EmailSvc: Asynchronous notification flow<br/>completes independently
+    Note over FrontEnd,CloudFunc: Client-side SDK directly<br/>updates Firestore<br/>Cloud Functions async handles emails
 ```
+
+**Sequence Diagram Description:** Case Filing Sequence shows: retrieve auth from Firebase Auth SDK, upload documents to Cloud Storage, create case record in Firestore, log audit entry. Frontend SDK updates Firestore synchronously while Cloud Functions handle async email dispatch.
 
 ## 6.3 Lawyer Registration and Approval Sequence
 
-Multi-actor workflow involving lawyer, system, and admin:
+Multi-actor workflow using Firebase Auth + Firestore (client-side SDK):
 
 ```mermaid
 sequenceDiagram
-    participant Lawyer as Lawyer User
-    participant WebApp as Web Application
-    participant AuthService as Firebase Auth
-    participant Firestore as Firestore DB
-    participant EmailService as Email Service
-    participant AdminDash as Admin Dashboard
+    participant Lawyer as Lawyer User<br/>(Browser)
+    participant Frontend as Frontend SDK<br/>(Client-side)
+    participant AuthSDK as Firebase Auth SDK
+    participant Firestore as Firestore SDK
+    participant CloudFunc as Cloud Functions<br/>(Trigger)
+    participant EmailSvc as Email Service<br/>(SMTP)
+    participant Admin as Admin User<br/>(Browser)
     
-    Lawyer->>WebApp: 1. navigateTo(/register/lawyer)
-    WebApp-->>Lawyer: 2. displayRegistrationForm()
+    Lawyer->>Frontend: 1. Click Register Lawyer
+    Frontend-->>Lawyer: 2. Show Registration Form
     
-    Lawyer->>WebApp: 3. submitForm({<br/>name, email, password,<br/>licenseNo, specialization<br/>})
+    Lawyer->>Frontend: 3. Submit {name, email, password,<br/>licenseNo, specialization}
     
-    WebApp->>AuthService: 4. createUserWithEmailAndPassword(<br/>email, password<br/>)
-    AuthService-->>WebApp: 5. userCredential {uid}
+    Frontend->>AuthSDK: 4. createUserWithEmailAndPassword()
+    AuthSDK-->>Frontend: 5. Return userCredential {uid}
     
-    WebApp->>Firestore: 6. setDoc(users/{uid}, {<br/>name, email, role=lawyer,<br/>status=pending,<br/>createdAt: now()<br/>})
-    Firestore-->>WebApp: 7. userDoc created
+    Frontend->>Firestore: 6. setDoc(users/{uid}, {<br/>name, email, role: 'lawyer',<br/>status: 'pending',<br/>createdAt: serverTimestamp()<br/>})
+    Firestore-->>Frontend: 7. ✓ Document created
     
-    WebApp->>Firestore: 8. setDoc(lawyer_details/{uid}, {<br/>licenseNo, specialization,<br/>barAssociation, experience<br/>})
-    Firestore-->>WebApp: 9. lawyerDoc created
+    Frontend->>Firestore: 8. setDoc(lawyer_details/{uid}, {<br/>licenseNo, specialization<br/>})
+    Firestore-->>Frontend: 9. ✓ Document created
     
-    WebApp->>EmailService: 10. sendEmail({<br/>to: lawyerEmail,<br/>subject: "Registration Submitted",<br/>message: "Awaiting admin approval"<br/>})
-    EmailService-->>Lawyer: 11. deliverEmail()
+    Firestore->>CloudFunc: 10. [Trigger] onDocumentCreated<br/>(users/{uid})
+    CloudFunc->>EmailSvc: 11. sendEmail(lawyerEmail,<br/>\"Registration submitted\")
+    EmailSvc-->>Lawyer: 12. Confirmation email
     
-    WebApp-->>Lawyer: 12. showMessage("Pending Approval")
+    Frontend-->>Lawyer: 13. Show \"Pending Approval\"<br/>Cannot login
     
-    Note over Lawyer,AdminDash: Time passes; Admin reviews application
+    Note over Lawyer,Admin: Admin reviews pending lawyers
     
-    AdminDash->>Firestore: 13. query(users where<br/>role=lawyer AND<br/>status=pending)
-    Firestore-->>AdminDash: 14. lawyerList: [{...}, {...}, ...]
-    AdminDash-->>AdminDash: 15. displayPendingLawyers()
+    Admin->>Frontend: 14. Login to Admin Dashboard
+    Frontend->>AuthSDK: 15. signInWithEmailAndPassword()
+    AuthSDK-->>Frontend: 16. Admin authenticated
     
-    AdminDash->>Firestore: 16. updateDoc(users/{uid}, {<br/>status: active<br/>})
-    Firestore-->>AdminDash: 17. ✓ updated
+    Admin->>Firestore: 17. query(users where<br/>role='lawyer' AND<br/>status='pending')
+    Firestore-->>Admin: 18. Return lawyerList[]
+    Frontend-->>Admin: 19. Display pending lawyers
     
-    AdminDash->>EmailService: 18. sendEmail({<br/>to: lawyerEmail,<br/>subject: "Application Approved",<br/>message: "You can now login"<br/>})
-    EmailService-->>Lawyer: 19. deliverApprovalEmail()
+    Admin->>Firestore: 20. updateDoc(users/{uid}, {<br/>status: 'active'<br/>})
+    Firestore-->>Admin: 21. ✓ Updated
     
-    Lawyer->>WebApp: 20. navigateTo(/login)
-    WebApp->>AuthService: 21. signInWithEmailAndPassword(<br/>email, password<br/>)
-    AuthService-->>WebApp: 22. userCredential {uid, token}
+    Firestore->>CloudFunc: 22. [Trigger] onDocumentUpdated
+    CloudFunc->>EmailSvc: 23. sendEmail(lawyerEmail,<br/>\"Application Approved\")
+    EmailSvc-->>Lawyer: 24. Approval email
     
-    WebApp->>Firestore: 23. getDoc(users/{uid})
-    Firestore-->>WebApp: 24. userData {role, status=active}
+    Lawyer->>Frontend: 25. Click Login
+    Frontend->>AuthSDK: 26. signInWithEmailAndPassword()
+    AuthSDK-->>Frontend: 27. ✓ Auth Success
     
-    WebApp-->>Lawyer: 25. redirectTo(/lawyer-dashboard)
-    Lawyer-->>Lawyer: 26. Display lawyer dashboard
+    Frontend->>Firestore: 28. getDoc(users/{uid})
+    Firestore-->>Frontend: 29. userData {role, status: 'active'}
+    
+    Frontend->>Frontend: 30. Check: status == 'active'?
+    Frontend-->>Lawyer: 31. ✓ Redirect to lawyer dashboard
 ```
+
+**Sequence Diagram Description:** Lawyer Registration Sequence: lawyer completes form and creates Firebase auth (steps 1-13), admin reviews and approves with status='active' (steps 14-21), lawyer logs in with status validation (steps 25-31). Demonstrates coupling between Firebase Auth and Firestore authorization.
 
 ## 6.4 Collaboration Diagram (Component Interactions)
 
 ```mermaid
 graph LR
-    ClientApp["👤 Client Application<br/>(Web Browser)"]
+    ClientApp["👤 Client Application<br/>(Web Browser - React/Vue SPA)"]
     
-    WebServer["🌐 Web Server<br/>(Firebase Hosting)"]
+    AuthSDK["🔐 Firebase Auth SDK<br/>- Email/Password Auth<br/>- JWT Token Generation<br/>- Session Management<br/>- currentUser().uid"]
     
-    AuthModule["🔐 Firebase Auth<br/>- User Credentials<br/>- Token Generation<br/>- Session Management"]
+    FirestoreSDK["🗄️ Firestore SDK<br/>- Real-time Sync<br/>- collections: users,<br/>  lawyer_details,<br/>  cases, documents,<br/>  audit_logs<br/>- Security Rules<br/>  enforcement"]
     
-    FirestoreDB["🗄️ Cloud Firestore<br/>- users collection<br/>- cases collection<br/>- documents meta<br/>- audit_logs"]
+    CloudStorageSDK["💾 Cloud Storage SDK<br/>- File Upload/Download<br/>- Signed URLs<br/>- Metadata Management<br/>- Access Control"]
     
-    CloudStorage["💾 Cloud Storage<br/>- Case Documents<br/>- Evidence Files<br/>- Reports"]
+    CloudFunctions["⚡ Cloud Functions<br/>(Optional - Async)<br/>- Firestore Triggers<br/>- Email Dispatch<br/>- Case Workflows<br/>- Notifications"]
     
-    NotificationSvc["📧 Cloud Functions<br/>+ SMTP Service<br/>- Email Dispatch<br/>- Template Rendering<br/>- Delivery Tracking"]
+    EmailService["📧 SMTP Service<br/>(SendGrid/Postmark)<br/>- Email Templates<br/>- Delivery Tracking<br/>- Bounce Handling"]
     
-    ClientApp -->|1: HTTP Request<br/>Static Assets| WebServer
-    WebServer -->|2: HTML/CSS/JS<br/>Bundle| ClientApp
+    ClientApp -->|1. Auth Credentials<br/>createUserWithEmailAndPassword()| AuthSDK
+    ClientApp -->|2. signInWithEmailAndPassword()| AuthSDK
+    AuthSDK -->|3. getAuth().currentUser<br/>{uid, email}| ClientApp
     
-    ClientApp -->|3: Auth Credentials<br/>signIn()| AuthModule
-    AuthModule -->|4: Query User<br/>Verify Hash| FirestoreDB
-    FirestoreDB -->|5: User Record| AuthModule
-    AuthModule -->|6: JWT Token<br/>setAuthCookie()| ClientApp
+    ClientApp -->|4. setDoc() / getDoc()<br/>addDoc() / updateDoc()| FirestoreSDK
+    FirestoreSDK -->|5. Real-time data<br/>with security rules| ClientApp
     
-    ClientApp -->|7: API Call<br/>with JWT| WebServer
-    WebServer -->|8: Validate Token<br/>Extract Claims| AuthModule
+    ClientApp -->|6. Upload file<br/>ref.put(file)| CloudStorageSDK
+    CloudStorageSDK -->|7. Signed URL<br/>& metadata| ClientApp
     
-    WebServer -->|9: CRUD Operation<br/>read/write| FirestoreDB
-    FirestoreDB -->|10: Data Result<br/>Query Response| WebServer
+    FirestoreSDK -->|8. Document<br/>change trigger| CloudFunctions
+    CloudFunctions -->|9. Generate email| CloudFunctions
+    CloudFunctions -->|10. Send email<br/>via SMTP| EmailService
+    EmailService -->|11. Email<br/>delivered| ClientApp
     
-    WebServer -->|11: File Upload<br/>multipart/form-data| CloudStorage
-    CloudStorage -->|12: File Path<br/>& Metadata| WebServer
-    
-    WebServer -->|13: Pub/Sub Trigger<br/>Case Status Update| NotificationSvc
-    NotificationSvc -->|14: Template<br/>Substitution| NotificationSvc
-    NotificationSvc -->|15: SMTP Send<br/>Email Message| ClientApp
-    
-    note right of AuthModule
+    note right of AuthSDK
         Stateless token-based auth
-        JWT claims contain role, userId
+        No backend session needed
+        JWT validated by Firestore rules
     end note
     
-    note right of FirestoreDB
-        Real-time database
-        Document-oriented NoSQL
-        Auto-scaling capacity
+    note right of FirestoreSDK
+        Real-time NoSQL database
+        Document-oriented model
+        Automatic sync to all clients
+    end note
+    
+    note right of CloudFunctions
+        Optional async processing
+        Triggered by database changes
+        Not required for MVP
     end note
 ```
+
+**Collaboration Diagram Description:** Collaboration Diagram shows bidirectional interactions with Firebase services. AuthSDK handles authentication, FirestoreSDK provides real-time sync with security rules, CloudStorageSDK manages file uploads with signed URLs. Cloud Functions trigger on Firestore changes for async email via SMTP.
 
 ---
 
@@ -1098,53 +1134,46 @@ Component architecture adheres to SOLID principles:
 
 ```mermaid
 graph TB
-    subgraph Client["📱 Client Tier<br/>(User-Facing)"]
-        Browser["🌐 Web Browser<br/>React/Vue.js SPA<br/>- Responsive UI<br/>- State Management<br/>- Client-side Validation"]
+    subgraph Client["📱 Client Tier (User-Facing)"]
+        Browser["🌐 Web Browser<br/>React/Vue.js SPA<br/>- Responsive UI<br/>- State Management<br/>- Client-side Validation<br/>- Firebase SDK Integration"]
     end
     
-    subgraph Frontend["🎨 Frontend Services"]
-        Router["Router<br/>(SPA Navigation)"]
-        StateStore["State Management<br/>(Vuex/Redux)"]
-        Components["UI Components<br/>(Reusable, Composable)"]
-    end
-    
-    subgraph Backend["☁️ Backend Services<br/>(Firebase Ecosystem)"]
-        Auth["🔐 Authentication<br/>Firebase Auth<br/>- Registration<br/>- Login<br/>- Token Management<br/>- MFA (future)"]
+    subgraph Firebase["☁️ Firebase Backend<br/>(No Traditional Server)"]
+        Auth["🔐 Firebase Authentication<br/>- Email/Password Registration<br/>- signInWithEmailAndPassword()<br/>- JWT Token Management<br/>- currentUser() access"]
         
-        Firestore["🗄️ Data Layer<br/>Cloud Firestore<br/>- Document Store<br/>- Real-time Sync<br/>- Offline Support<br/>- Transactions"]
+        Firestore["🗄️ Cloud Firestore<br/>- Document Store (NoSQL)<br/>- Collections: users,<br/>  lawyer_details, cases,<br/>  documents, audit_logs<br/>- Real-time Sync<br/>- Security Rules Enforcement"]
         
-        CloudFunctions["⚡ Application Logic<br/>Cloud Functions<br/>- Case State Validation<br/>- Conflict Detection<br/>- Event Handlers<br/>- Scheduled Jobs"]
+        CloudStorage["💾 Cloud Storage<br/>- Case Documents<br/>- Evidence Files<br/>- Signed URLs<br/>- Access Control"]
         
-        Storage["💾 File Repository<br/>Cloud Storage<br/>- Case Documents<br/>- Secure URLs<br/>- Versioning<br/>- Access Control"]
-        
-        PubSub["📢 Event Bus<br/>Firestore Triggers<br/>Cloud Functions<br/>- Event Publishing<br/>- Subscription Handling<br/>- Async Processing"]
+        CloudFunctions["⚡ Cloud Functions<br/>(Optional - Async)<br/>- Firestore Triggers<br/>- Email Notifications<br/>- Case Workflows"]
     end
     
     subgraph ThirdParty["🔌 External Services"]
-        EmailProvider["📧 SMTP Provider<br/>(SendGrid/Postmark)<br/>- Email Delivery<br/>- Bounce Handling<br/>- Reputation Management"]
-        
-        SMSProvider["📱 SMS Gateway<br/>(Twilio)<br/>- OTP Delivery<br/>- Alert Notifications<br/>- Delivery Confirmation"]
-        
-        Monitoring["📊 Observability<br/>Firebase Monitoring<br/>Google Cloud Logging<br/>- Metrics<br/>- Logs<br/>- Traces<br/>- Alerts"]
+        EmailProvider["📧 SMTP Provider<br/>(SendGrid/Postmark)<br/>- Email Delivery<br/>- Bounce Management<br/>- Templates"]
     end
     
-    Browser --> Router
-    Router --> StateStore
-    StateStore --> Components
-    
-    Components -->|HTTP/REST| Auth
-    Components -->|WebSocket/REST| Firestore
-    Components -->|Signed URLs| Storage
+    Browser -->|Direct SDK Calls<br/>createUserWithEmailAndPassword<br/>setDoc(), getDoc()| Auth
+    Browser -->|Real-time Sync<br/>with Security Rules| Firestore
+    Browser -->|Upload/Download<br/>Files| CloudStorage
     
     Auth --> Firestore
-    CloudFunctions -.->|Trigger| Firestore
-    CloudFunctions -.->|Publish Event| PubSub
-    PubSub -.->|Notification| EmailProvider
-    PubSub -.->|Notification| SMSProvider
+    Firestore -->|Trigger Events| CloudFunctions
+    CloudFunctions -->|Send Email| EmailProvider
     
-    CloudFunctions -.->|Log Events| Monitoring
-    Firestore -.->|Metrics| Monitoring
+    note right of Client
+        Single Page Application
+        Client-side logic & SDK calls
+        No backend server needed
+    end note
+    
+    note right of Firebase
+        Fully managed services
+        Zero infrastructure management
+        Automatic scaling
+    end note
 ```
+
+**Component Diagram Description:** Component Diagram shows two-tier architecture: Client (React/Vue SPA) and Firebase Backend. Browser communicates via SDK to Firebase Auth (JWT tokens), Firestore (NoSQL real-time sync), Cloud Storage (uploads), Cloud Functions (async). Serverless model eliminates operational overhead.
 
 ## 7.3 Deployment Architecture (Infrastructure as Code)
 
@@ -1213,6 +1242,8 @@ graph TB
     
     Monitoring -->|Alert| AdminU
 ```
+
+**Deployment Diagram Description:** Deployment on GCP (Firebase): Cloud CDN caches assets and provides DDoS protection; Firebase Hosting serves SPA; Firestore primary (us-central1, 99.99% SLA) with multi-region replicas; Cloud Storage for documents; Cloud Functions scales 0-1000s; Cloud Logging/Monitoring/IAM/KMS for observability and security.
 
 ## 7.4 Disaster Recovery and Business Continuity
 
